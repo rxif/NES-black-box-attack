@@ -258,16 +258,14 @@ def nes_grad_estimate(model, x, label_idx, sigma, n_samples, targeted, device):
 
 def nes_attack_one(x_np, target_np, model, targeted, solver,
                    device, epsilon, sigma, n_samples,
-                   max_iter, max_lr, min_lr, plateau_length, plateau_drop,
-                   early_stop=True):
+                   max_iter, max_lr, min_lr, plateau_length, plateau_drop):
     """
-    Run NES attack on a single image.
+    Run NES attack on a single image. Stops as soon as the attack succeeds.
 
-    x_np       : (C, H, W) numpy array in normalised space [-0.5, 0.5]
-    target_np  : (num_classes,) one-hot numpy array
-    early_stop : stop as soon as the attack succeeds (default True)
-    Returns    : (adv_np, success bool, distortion float, loss history list,
-                  queries int)
+    x_np      : (C, H, W) numpy array in normalised space [-0.5, 0.5]
+    target_np : (num_classes,) one-hot numpy array
+    Returns   : (adv_np, success bool, distortion float, loss history list,
+                 queries int)
     """
     x0    = torch.from_numpy(x_np).unsqueeze(0).to(device)   # (1,C,H,W)
     adv   = x0.clone()
@@ -306,15 +304,14 @@ def nes_attack_one(x_np, target_np, model, targeted, solver,
         if step % 20 == 0:
             print('  step %04d | loss %.4f | lr %.2e' % (step, loss, max_lr_cur))
 
-        if early_stop:
-            with torch.no_grad():
-                pred = int(model(adv).argmax(dim=1).item())
-            success = (pred == label_idx) if targeted else (pred != orig_idx)
-            if success:
-                print('  Early stop at step %d (%d queries)' % (step + 1, queries))
-                adv_np = adv.squeeze(0).cpu().numpy()
-                dist   = float(np.max(np.abs(adv_np - x_np)))
-                return adv_np, True, dist, loss_hist, queries
+        with torch.no_grad():
+            pred = int(model(adv).argmax(dim=1).item())
+        success = (pred == label_idx) if targeted else (pred != orig_idx)
+        if success:
+            print('  Early stop at step %d (%d queries)' % (step + 1, queries))
+            adv_np = adv.squeeze(0).cpu().numpy()
+            dist   = float(np.max(np.abs(adv_np - x_np)))
+            return adv_np, True, dist, loss_hist, queries
 
     # Final prediction
     with torch.no_grad():
@@ -387,8 +384,6 @@ if __name__ == '__main__':
     parser.add_argument('--min_lr',        type=float, default=None)
     parser.add_argument('--plateau_length',type=int,   default=5)
     parser.add_argument('--plateau_drop',  type=float, default=2.0)
-    parser.add_argument('--full-budget',   action='store_true',
-                        help='Run all iterations even after success (default: early stop)')
     args = parser.parse_args()
 
     # Dataset-specific defaults
@@ -461,8 +456,6 @@ if __name__ == '__main__':
     queries_list = []
     mse_list, mae_list, psnr_list, ssim_list = [], [], [], []
     orig_classes, adv_classes = [], []
-    early_stop = not args.full_budget
-
     t0 = time.time()
     for i in range(len(inputs)):
         print('\n=== Sample %d / %d ===' % (i+1, len(inputs)))
@@ -476,7 +469,6 @@ if __name__ == '__main__':
             min_lr         = args.min_lr,
             plateau_length = args.plateau_length,
             plateau_drop   = args.plateau_drop,
-            early_stop     = early_stop,
         )
         queries_list.append(queries)
 
@@ -521,7 +513,7 @@ if __name__ == '__main__':
 
     print('\n' + '='*60)
     print('Solver       : %s' % args.solver)
-    print('Mode         : %s' % ('full budget' if args.full_budget else 'early stop'))
+    print('Mode         : early stop')
     print('Success Rate : %.1f %%' % success_rate)
     print('Queries (avg on success) : %.1f / %d' % (mean_queries, args.max_iter * args.n_samples))
     print('Distortion   : %.4f' % total_distortion)
@@ -537,7 +529,7 @@ if __name__ == '__main__':
         'success_rate_pct':           success_rate,
         'total_distortion':           total_distortion,
         'time_mins':                  elapsed,
-        'early_stop':                 early_stop,
+        'early_stop':                 True,
         'queries': {
             'per_sample':             queries_list,
             'mean_on_success':        mean_queries,

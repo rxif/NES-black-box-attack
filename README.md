@@ -57,24 +57,9 @@ python nes_attack.py --dataset cifar10 --solver lion --samples 10 --targeted
 
 ---
 
-## Early stop vs full budget
+## Early stopping
 
-By default the attack uses **early stopping**: it stops as soon as the adversarial example successfully fools the model. This measures how many queries each optimizer needs to break the model, which is a strong indicator of solver efficiency.
-
-To run the full iteration budget regardless of success (original NES paper behaviour), add `--full-budget`:
-
-```bash
-# Early stop — default, stops as soon as attack succeeds
-python nes_attack.py --dataset mnist --solver lion --samples 10
-
-# Full budget — runs all iterations even after success
-python nes_attack.py --dataset mnist --solver lion --samples 10 --full-budget
-```
-
-| Mode | What it measures |
-|---|---|
-| Early stop (default) | Number of queries to first success — solver efficiency |
-| Full budget | Loss curve over the full horizon — comparable across all samples |
+The attack always stops as soon as the adversarial example successfully fools the model. This measures how many queries each optimizer needs to break the model, which is a strong indicator of solver efficiency. The number of queries used is saved in `results.json`.
 
 ---
 
@@ -86,7 +71,6 @@ python nes_attack.py --dataset mnist --solver lion --samples 10 --full-budget
 | `--solver` | `momentum` | `momentum`, `nesterov`, `adagrad`, `adam`, `sgd`, `lion` |
 | `--samples` | `10` | Number of images to attack |
 | `--targeted` | `False` | Targeted attack (default: untargeted) |
-| `--full-budget` | `False` | Run all iterations even after success |
 | `--epsilon` | auto | L-inf perturbation budget |
 | `--sigma` | auto | NES noise standard deviation |
 | `--n_samples` | auto | Number of NES perturbation samples per step |
