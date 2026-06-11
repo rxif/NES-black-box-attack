@@ -43,6 +43,7 @@ max_lr by ~100x.
 """
 
 import numpy as np
+import inspect
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +275,11 @@ def make_optimizer(name, **kwargs):
         )
     cls = _REGISTRY[name]
     # only forward kwargs the constructor actually wants
-    valid = cls.__init__.__code__.co_varnames[1:cls.__init__.__code__.co_argcount]
+    try:
+        sig = inspect.signature(cls.__init__)
+        valid = [p.name for p in sig.parameters.values() if p.name != "self"]
+    except (TypeError, ValueError):
+        valid = []
     filtered = {k: v for k, v in kwargs.items() if k in valid}
     return cls(**filtered)
 

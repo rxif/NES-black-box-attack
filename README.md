@@ -34,7 +34,11 @@ python nes_attack.py --dataset mnist --solver nesterov --samples 10
 python nes_attack.py --dataset mnist --solver adagrad  --samples 10
 python nes_attack.py --dataset mnist --solver adam     --samples 10
 python nes_attack.py --dataset mnist --solver sgd      --samples 10
+python nes_attack.py --dataset mnist --solver sgdsign  --samples 10
+python nes_attack.py --dataset mnist --solver signum   --samples 10
 python nes_attack.py --dataset mnist --solver lion     --samples 10
+python nes_attack.py --dataset mnist --solver newton   --samples 10
+python nes_attack.py --dataset mnist --solver adahessian --samples 10
 ```
 
 ### All solvers — CIFAR-10
@@ -45,7 +49,11 @@ python nes_attack.py --dataset cifar10 --solver nesterov --samples 10
 python nes_attack.py --dataset cifar10 --solver adagrad  --samples 10
 python nes_attack.py --dataset cifar10 --solver adam     --samples 10
 python nes_attack.py --dataset cifar10 --solver sgd      --samples 10
+python nes_attack.py --dataset cifar10 --solver sgdsign  --samples 10
+python nes_attack.py --dataset cifar10 --solver signum   --samples 10
 python nes_attack.py --dataset cifar10 --solver lion     --samples 10
+python nes_attack.py --dataset cifar10 --solver newton   --samples 10
+python nes_attack.py --dataset cifar10 --solver adahessian --samples 10
 ```
 
 ### Targeted attack
@@ -68,7 +76,7 @@ The attack always stops as soon as the adversarial example successfully fools th
 | Argument | Default | Description |
 |---|---|---|
 | `--dataset` | — | `mnist`, `cifar10`, or `imagenet` |
-| `--solver` | `momentum` | `momentum`, `nesterov`, `adagrad`, `adam`, `sgd`, `lion` |
+| `--solver` | `momentum` | `momentum`, `nesterov`, `adagrad`, `adam`, `sgd`, `sgdsign`, `signum`, `lion`, `newton`, `adahessian` |
 | `--samples` | `10` | Number of images to attack |
 | `--targeted` | `False` | Targeted attack (default: untargeted) |
 | `--epsilon` | auto | L-inf perturbation budget |

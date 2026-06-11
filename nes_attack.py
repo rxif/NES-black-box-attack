@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import argparse
+import subprocess
 
 import numpy as np
 import torch
@@ -34,6 +35,22 @@ from models.setup_mnist_model   import MNIST
 
 # ── Import NES optimizers ─────────────────────────────────────────────────────
 from optimizers import make_optimizer
+
+
+# ImageNette synset folders mapped to true ImageNet class IDs
+IMAGENETTE_TO_IMAGENET = {
+    'n01440764': 0,    # tench
+    'n02102040': 217,  # English springer
+    'n02979186': 482,  # cassette player
+    'n03000684': 491,  # chain saw
+    'n03028079': 497,  # church
+    'n03394916': 566,  # French horn
+    'n03417042': 569,  # garbage truck
+    'n03425413': 571,  # gas pump
+    'n03445777': 574,  # golf ball
+    'n03888257': 701,  # parachute
+}
+IMAGENETTE_LABEL_IDS = list(IMAGENETTE_TO_IMAGENET.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,20 +93,6 @@ def load_dataset_and_model(dataset_name, device, imagenet_dir=None):
     elif dataset_name == 'imagenet':
         from torchvision import models
         from torchvision.datasets import ImageFolder
-
-        # ImageNette synset folders → true ImageNet class IDs
-        IMAGENETTE_TO_IMAGENET = {
-            'n01440764': 0,    # tench
-            'n02102040': 217,  # English springer
-            'n02979186': 482,  # cassette player
-            'n03000684': 491,  # chain saw
-            'n03028079': 497,  # church
-            'n03394916': 566,  # French horn
-            'n03417042': 569,  # garbage truck
-            'n03425413': 571,  # gas pump
-            'n03445777': 574,  # golf ball
-            'n03888257': 701,  # parachute
-        }
 
         val_dir = os.path.join('data', 'imagenette2-320', 'val')
         if not os.path.isdir(val_dir):
@@ -159,10 +162,37 @@ def load_dataset_and_model(dataset_name, device, imagenet_dir=None):
 # Sample selection  (mirrors generate_data in zoo_l2_attack_black.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def generate_data(loader, targeted, samples, start, num_labels):
+def select_one_per_label(data_arr, label_arr, required_labels, start=0):
+    """
+    Select one sample per required label, preserving `required_labels` order.
+    Returns (selected_data, selected_labels, missing_labels).
+    """
+    first_idx = {}
+    req = set(required_labels)
+    start_idx = max(int(start), 0)
+
+    for i in range(start_idx, len(label_arr)):
+        lbl = int(label_arr[i])
+        if lbl in req and lbl not in first_idx:
+            first_idx[lbl] = i
+            if len(first_idx) == len(required_labels):
+                break
+
+    chosen_labels = [lbl for lbl in required_labels if lbl in first_idx]
+    missing = [lbl for lbl in required_labels if lbl not in first_idx]
+
+    if not chosen_labels:
+        return np.empty((0, *data_arr.shape[1:]), dtype=data_arr.dtype), np.empty((0,), dtype=label_arr.dtype), missing
+
+    idxs = [first_idx[lbl] for lbl in chosen_labels]
+    return data_arr[idxs], label_arr[idxs], missing
+
+def generate_data(loader, targeted, samples, start, num_labels, targeted_k=None,
+                  target_label_pool=None):
     """
     Collect `samples` correctly-classified images starting after index `start`.
-    Targeted  → returns one (image, one-hot target) per non-true class.
+    Targeted  → returns one (image, one-hot target) per selected non-true class.
+                If targeted_k is None, uses all non-true classes (original behavior).
     Untargeted → returns (image, one-hot true-class).
     """
     inputs, targets = [], []
@@ -175,9 +205,22 @@ def generate_data(loader, targeted, samples, start, num_labels):
         x   = data[0].numpy()          # (C, H, W)
         lbl = int(label.item())
         if targeted:
-            for j in range(num_labels):
-                if j == lbl:
-                    continue
+            if target_label_pool is None:
+                candidate_targets = [j for j in range(num_labels) if j != lbl]
+            else:
+                candidate_targets = [j for j in target_label_pool if j != lbl]
+
+            if not candidate_targets:
+                cnt += 1
+                continue
+
+            if targeted_k is None:
+                selected_targets = candidate_targets
+            else:
+                k = max(1, min(int(targeted_k), len(candidate_targets)))
+                selected_targets = np.random.choice(candidate_targets, size=k, replace=False).tolist()
+
+            for j in selected_targets:
                 inputs.append(x)
                 targets.append(np.eye(num_labels)[j])
         else:
@@ -358,6 +401,36 @@ def compute_metrics(orig_np, adv_np):
     return {'mse': mse, 'mae': mae, 'psnr': psnr, 'ssim': ssim}
 
 
+def choose_device_with_cuda_probe():
+    """Pick CUDA only if a minimal GPU forward pass succeeds."""
+    if not torch.cuda.is_available():
+        return torch.device('cpu'), 'CUDA not available, using CPU'
+
+    probe = (
+        "import torch\n"
+        "x=torch.randn(1,1,28,28,device='cuda')\n"
+        "m=torch.nn.Conv2d(1,8,3).cuda()\n"
+        "with torch.no_grad():\n"
+        "    _=m(x)\n"
+        "torch.cuda.synchronize()\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, '-c', probe],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode == 0:
+        gpu_name = torch.cuda.get_device_name(0)
+        return torch.device('cuda'), 'Using GPU: %s' % gpu_name
+
+    return torch.device('cpu'), (
+        'CUDA detected but self-test failed (likely driver/WSL/CUDA runtime mismatch). '
+        'Falling back to CPU to avoid Bus error.'
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -367,10 +440,19 @@ if __name__ == '__main__':
     parser.add_argument('--dataset',  choices=['mnist','cifar10','imagenet'],
                         default='cifar10')
     parser.add_argument('--solver',   choices=['momentum','nesterov','adagrad',
-                                               'adam','sgd','lion'],
+                                               'adam','sgd','sgdsign','signum',
+                                               'lion','newton','adahessian'],
                         default='momentum')
     parser.add_argument('--targeted', action='store_true',
                         help='Targeted attack (default: untargeted)')
+    parser.add_argument('--targeted-k', type=int, default=None,
+                        help='Number of non-true target classes per source image in targeted mode '
+                             '(default: all non-true classes)')
+    parser.add_argument('--imagenette-one-per-class', action='store_true',
+                        help='For ImageNet: use exactly one correctly-classified sample from each '
+                            'ImageNette class (10 total sources).')
+    parser.add_argument('--target-label-set', choices=['all', 'imagenette10'], default='all',
+                        help='Target class pool for targeted attacks (default: all classes).')
     parser.add_argument('--samples',  type=int, default=10)
     parser.add_argument('--start',    type=int, default=6,
                         help='Offset into test set (same as mate)')
@@ -390,7 +472,7 @@ if __name__ == '__main__':
     DEFAULTS = {
         'mnist':    dict(epsilon=0.3,  sigma=0.05, n_samples=100, max_iter=500, max_lr=0.05,  min_lr=0.001),
         'cifar10':  dict(epsilon=0.05, sigma=0.05, n_samples=100, max_iter=500, max_lr=0.01,  min_lr=0.0005),
-        'imagenet': dict(epsilon=0.05, sigma=0.001,n_samples=50,  max_iter=200, max_lr=0.01,  min_lr=0.0005),
+        'imagenet': dict(epsilon=0.05, sigma=0.001,n_samples=100,  max_iter=500, max_lr=0.01,  min_lr=0.0005),
     }
     d = DEFAULTS[args.dataset]
     if args.epsilon  is None: args.epsilon  = d['epsilon']
@@ -403,8 +485,9 @@ if __name__ == '__main__':
     np.random.seed(42)
     torch.manual_seed(42)
 
-    use_cuda = True
-    device = torch.device('cuda' if (use_cuda and torch.cuda.is_available()) else 'cpu')
+    device, device_msg = choose_device_with_cuda_probe()
+    print(device_msg)
+
     print('Dataset: %s | Solver: %s | Targeted: %s | Device: %s' % (
         args.dataset, args.solver, args.targeted, device))
 
@@ -414,24 +497,27 @@ if __name__ == '__main__':
 
     # ── Filter to correctly-classified samples ───────────────────────────────
     print('Checking model accuracy on test set...')
-    all_inputs, all_labels = [], []
-    for img, lbl in loader:
-        all_inputs.append(img[0].numpy())
-        all_labels.append(int(lbl.item()))
-    all_inputs = np.array(all_inputs)
-    all_labels = np.array(all_labels)
-
-    inp_t   = torch.from_numpy(all_inputs).to(device)
+    data_correct, label_correct = [], []
+    total = 0
+    num_correct = 0
     with torch.no_grad():
-        preds = model(inp_t).argmax(dim=1).cpu().numpy()
+        for img, lbl in loader:
+            img_dev = img.to(device)
+            lbl_int = int(lbl.item())
+            pred = int(model(img_dev).argmax(dim=1).item())
 
-    acc = (preds == all_labels).mean()
+            total += 1
+            if pred == lbl_int:
+                num_correct += 1
+                data_correct.append(img[0].numpy())
+                label_correct.append(lbl_int)
+
+    acc = float(num_correct) / max(total, 1)
     print('Model accuracy: %.2f%%' % (acc * 100))
+    print('Correctly classified: %d / %d' % (num_correct, total))
 
-    correct_mask = (preds == all_labels)
-    data_correct  = all_inputs[correct_mask]
-    label_correct = all_labels[correct_mask]
-    print('Correctly classified: %d / %d' % (correct_mask.sum(), len(all_labels)))
+    data_correct = np.array(data_correct, dtype=np.float32)
+    label_correct = np.array(label_correct, dtype=np.int64)
 
     correct_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(
@@ -439,9 +525,41 @@ if __name__ == '__main__':
             torch.from_numpy(label_correct)),
         batch_size=1, shuffle=False)
 
+    target_label_pool = None
+    if args.targeted and args.target_label_set == 'imagenette10':
+        target_label_pool = IMAGENETTE_LABEL_IDS
+
+    use_imagenette_one_per_class = args.imagenette_one_per_class or (
+        args.dataset == 'imagenet' and not args.targeted
+    )
+
+    if use_imagenette_one_per_class:
+        selected_data, selected_labels, missing = select_one_per_label(
+            data_correct, label_correct, IMAGENETTE_LABEL_IDS, start=args.start)
+        if missing:
+            raise RuntimeError(
+                'Could not find correctly-classified samples for labels: %s' % missing)
+
+        if args.dataset == 'imagenet' and not args.targeted and not args.imagenette_one_per_class:
+            print('Auto-enabling class-balanced ImageNette sources for untargeted ImageNet.')
+        print('Using class-balanced ImageNette sources (10 classes, 1 sample each).')
+        print('Selected labels: %s' % selected_labels.tolist())
+
+        correct_loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(
+                torch.from_numpy(selected_data),
+                torch.from_numpy(selected_labels)),
+            batch_size=1, shuffle=False)
+
+        # We already curated exactly 10 sources, so consume all from the start.
+        args.samples = len(selected_data)
+        args.start = -1
+
     # ── Select attack samples ────────────────────────────────────────────────
     inputs, targets = generate_data(correct_loader, args.targeted,
-                                    args.samples, args.start, num_labels)
+                                    args.samples, args.start, num_labels,
+                                    targeted_k=args.targeted_k,
+                                    target_label_pool=target_label_pool)
     print('Attack samples selected: %d' % len(inputs))
 
     # ── Output directory ─────────────────────────────────────────────────────
@@ -507,6 +625,7 @@ if __name__ == '__main__':
     success_rate    = 100.0 * sum(success_list) / max(len(success_list), 1)
     total_distortion = float(np.sum(
         [(np.sum((adv_list[i] - inputs[i])**2)**0.5) for i in range(len(inputs))]))
+    mean_l2_distortion = total_distortion / max(len(inputs), 1)
 
     successful_queries = [queries_list[i] for i in range(len(success_list)) if success_list[i]]
     mean_queries = float(np.mean(successful_queries)) if successful_queries else float('nan')
@@ -528,6 +647,12 @@ if __name__ == '__main__':
         'num_samples':                len(inputs),
         'success_rate_pct':           success_rate,
         'total_distortion':           total_distortion,
+        'mean_l2_distortion':          mean_l2_distortion,
+        'per_sample_distortion_linf': dist_list,
+        'distortion_metrics': {
+            'total_distortion': 'sum over samples of L2 norm ||adv - orig||_2 in normalized space [-0.5, 0.5]',
+            'per_sample_distortion_linf': 'per-sample L-inf norm ||adv - orig||_inf in normalized space [-0.5, 0.5]'
+        },
         'time_mins':                  elapsed,
         'early_stop':                 True,
         'queries': {
