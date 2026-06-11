@@ -206,7 +206,79 @@ class SGD(Optimizer):
 
     def update(self, grad):
         return grad
+    
+# ---------------------------------------------------------------------------
+# SGDSign
+# ---------------------------------------------------------------------------
+class SGDSign(Optimizer):
+    """
+    SignSGD (Bernstein et al., 2018).
 
+    Returns sign(grad) directly.
+    Since attacks.py applies np.sign() again, this effectively becomes
+    pure sign-gradient descent.
+    """
+
+    name = "sgdsign"
+
+    def update(self, grad):
+        return np.sign(grad)
+    
+# ---------------------------------------------------------------------------
+# Signum
+# ---------------------------------------------------------------------------
+class Signum(Optimizer):
+    """
+    Signum (Bernstein et al., 2019).
+
+        m_t = mu * m_{t-1} + (1-mu) * grad
+        out = sign(m_t)
+    """
+
+    name = "signum"
+
+    def __init__(self, momentum=0.9):
+        self.mu = momentum
+        self.m = None
+
+    def update(self, grad):
+        if self.m is None:
+            self.m = np.zeros_like(grad)
+
+        self.m = self.mu * self.m + (1.0 - self.mu) * grad
+        return np.sign(self.m)
+
+    def _hyperparams(self):
+        return {"mu"}
+    
+# ---------------------------------------------------------------------------
+# Newton
+# ---------------------------------------------------------------------------
+class Newton(Optimizer):
+    """
+    Diagonal Newton approximation.
+
+    Uses running estimate of grad^2 as Hessian diagonal proxy.
+    """
+
+    name = "newton"
+
+    def __init__(self, beta=0.99, eps=1e-8):
+        self.beta = beta
+        self.eps = eps
+        self.h = None
+
+    def update(self, grad):
+        if self.h is None:
+            self.h = np.zeros_like(grad)
+
+        self.h = self.beta * self.h + (1.0 - self.beta) * (grad * grad)
+
+        return grad / (self.h + self.eps)
+
+    def _hyperparams(self):
+        return {"beta", "eps"}
+    
 # ---------------------------------------------------------------------------
 # Lion (EvoLved Sign Momentum)
 # ---------------------------------------------------------------------------
@@ -237,6 +309,53 @@ class Lion(Optimizer):
 
     def _hyperparams(self):
         return {"b1", "b2"}
+    
+# ---------------------------------------------------------------------------
+# AdaHessian
+# ---------------------------------------------------------------------------
+class AdaHessian(Optimizer):
+    """
+    AdaHessian-inspired diagonal curvature adaptation.
+
+    Black-box approximation using second-moment curvature proxy.
+    """
+
+    name = "adahessian"
+
+    def __init__(
+        self,
+        beta1=0.9,
+        beta2=0.999,
+        eps=1e-4,
+    ):
+        self.b1 = beta1
+        self.b2 = beta2
+        self.eps = eps
+
+        self.m = None
+        self.h = None
+        self.t = 0
+
+    def update(self, grad):
+        if self.m is None:
+            self.m = np.zeros_like(grad)
+            self.h = np.zeros_like(grad)
+
+        self.t += 1
+
+        self.m = self.b1 * self.m + (1.0 - self.b1) * grad
+
+        curvature = grad * grad
+
+        self.h = self.b2 * self.h + (1.0 - self.b2) * curvature
+
+        m_hat = self.m / (1.0 - self.b1 ** self.t)
+        h_hat = self.h / (1.0 - self.b2 ** self.t)
+
+        return m_hat / (np.sqrt(h_hat) + self.eps)
+
+    def _hyperparams(self):
+        return {"b1", "b2", "eps"}
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +367,10 @@ _REGISTRY = {
     "adagrad":   AdaGrad,
     "adam":      Adam,
     "sgd":       SGD,
+    "sgdsign":   SGDSign,
     "lion":      Lion,
+    "newton":    Newton,
+    "adahessian": AdaHessian,
 }
 
 
